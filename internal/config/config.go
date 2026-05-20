@@ -280,6 +280,8 @@ type Options struct {
 	Progress                  *bool        `json:"progress,omitempty" jsonschema:"description=Show indeterminate progress updates during long operations,default=true"`
 	DisableNotifications      bool         `json:"disable_notifications,omitempty" jsonschema:"description=Disable desktop notifications,default=false"`
 	DisabledSkills            []string     `json:"disabled_skills,omitempty" jsonschema:"description=List of skill names to disable and hide from the agent,example=crush-config"`
+	CustomPromptPath          string       `json:"custom_prompt_path,omitempty" jsonschema:"description=Path to a custom system prompt template file. Overrides the built-in coder template when set.,example=~/.config/crush/prompts/coder.md.tpl"`
+	CustomSummaryPromptPath   string       `json:"custom_summary_prompt_path,omitempty" jsonschema:"description=Path to a custom summary prompt file. Overrides the built-in summary prompt when set.,example=~/.config/crush/prompts/summary.md"`
 }
 
 type MCPs map[string]MCPConfig
