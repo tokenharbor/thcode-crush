@@ -221,48 +221,45 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 				return fantasy.ToolResponse{}, fmt.Errorf("session ID is required for executing shell command")
 			}
 
-			if !isSafeReadOnly && permissions.PermissionMode() != permission.PermissionModeSuperYolo {
-				// Check if the command is dangerous once and reuse.
+			if !isSafeReadOnly {
+				// Check whether the command is dangerous so we can surface a
+				// warning in the permission dialog and skip re-blocking after
+				// explicit approval.
 				blocks := blockFuncs()
 				isDangerous := shell.IsCommandBlocked(params.Command, blocks)
 
-				// In yolo mode, skip the prompt entirely for non-dangerous
-				// commands. In normal mode, always prompt (dangerous commands
-				// get an extra warning flag).
-				if permissions.PermissionMode() != permission.PermissionModeYolo || isDangerous {
-					approved, err := permissions.Request(ctx,
-						permission.CreatePermissionRequest{
-							SessionID:   sessionID,
-							Path:        execWorkingDir,
-							ToolCallID:  call.ID,
-							ToolName:    BashToolName,
-							Action:      "execute",
-							Description: fmt.Sprintf("Execute command: %s", params.Command),
-							Params:      BashPermissionsParams(params),
-							Dangerous:   isDangerous,
-						},
-					)
-					if err != nil {
-						return fantasy.ToolResponse{}, err
-					}
-					if !approved {
-						return NewPermissionDeniedResponse(), nil
-					}
-					if isDangerous {
-						// User explicitly approved a dangerous command - run
-						// without block functions so it's not re-blocked.
-						return executeBashCommand(ctx, params, execWorkingDir, nil)
-					}
+				approved, err := permissions.Request(ctx,
+					permission.CreatePermissionRequest{
+						SessionID:   sessionID,
+						Path:        execWorkingDir,
+						ToolCallID:  call.ID,
+						ToolName:    BashToolName,
+						Action:      "execute",
+						Description: fmt.Sprintf("Execute command: %s", params.Command),
+						Params:      BashPermissionsParams(params),
+						Dangerous:   isDangerous,
+					},
+				)
+				if err != nil {
+					return fantasy.ToolResponse{}, err
+				}
+				if !approved {
+					return NewPermissionDeniedResponse(), nil
+				}
+				if isDangerous {
+					// User explicitly approved a dangerous command - run
+					// without block functions so it is not re-blocked.
+					return executeBashCommand(ctx, params, execWorkingDir, nil)
 				}
 			}
 
-			// Determine block functions based on permission mode. Super yolo
-			// drops all restrictions; other modes enforce the block list.
-			blockFuncsToUse := blockFuncs()
-			if permissions.PermissionMode() == permission.PermissionModeSuperYolo {
-				blockFuncsToUse = nil
+			// Super yolo drops all shell-level restrictions; all other modes
+			// enforce the block list.
+			var blocksToUse []shell.BlockFunc
+			if permissions.PermissionMode() != permission.PermissionModeSuperYolo {
+				blocksToUse = blockFuncs()
 			}
-			return executeBashCommand(ctx, params, execWorkingDir, blockFuncsToUse)
+			return executeBashCommand(ctx, params, execWorkingDir, blocksToUse)
 		})
 }
 
