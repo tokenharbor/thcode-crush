@@ -56,8 +56,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolP("debug", "d", false, "Debug")
 	rootCmd.PersistentFlags().StringVarP(&clientHost, "host", "H", server.DefaultHost(), "Connect to a specific crush server host (for advanced users)")
 	rootCmd.Flags().BoolP("help", "h", false, "Help")
-	rootCmd.PersistentFlags().CountP("yolo", "y", "Auto-approve non-dangerous commands (-y), prompt for dangerous ones (-y) or auto-approve all (-yy)")
-	rootCmd.PersistentFlags().Bool("super-yolo", false, "Auto-approve all commands including dangerous ones")
+	rootCmd.PersistentFlags().CountP("yolo", "y", "Skip permission prompts: -y for non-dangerous commands, -yy to skip all including dangerous ones")
 	rootCmd.Flags().StringP("session", "s", "", "Continue a previous session by ID")
 	rootCmd.Flags().BoolP("continue", "C", false, "Continue the most recent session")
 	rootCmd.MarkFlagsMutuallyExclusive("session", "continue")
@@ -93,8 +92,11 @@ cat README.md | crush run "make this more glamorous" > GLAMOROUS_README.md
 # Run with debug logging in a specific directory
 crush --debug --cwd /path/to/project
 
-# Run in yolo mode (auto-accept all permissions; use with care)
-crush --yolo
+# Run in yolo mode (skip prompts for non-dangerous commands)
+crush -y
+
+# Run in super yolo mode (skip all prompts including dangerous commands)
+crush -yy
 
 # Run with custom data directory
 crush --data-dir /path/to/custom/.crush
@@ -250,7 +252,6 @@ func setupWorkspace(cmd *cobra.Command) (workspace.Workspace, func(), error) {
 func setupLocalWorkspace(cmd *cobra.Command) (workspace.Workspace, func(), error) {
 	debug, _ := cmd.Flags().GetBool("debug")
 	yoloCount, _ := cmd.Flags().GetCount("yolo")
-	superYolo, _ := cmd.Flags().GetBool("super-yolo")
 	dataDir, _ := cmd.Flags().GetString("data-dir")
 	ctx := cmd.Context()
 
@@ -265,8 +266,7 @@ func setupLocalWorkspace(cmd *cobra.Command) (workspace.Workspace, func(), error
 	}
 
 	cfg := store.Config()
-	store.Overrides().SkipPermissionRequests = yoloCount > 0 || superYolo
-	if superYolo || yoloCount > 1 {
+	if yoloCount > 1 {
 		store.Overrides().PermissionMode = permission.PermissionModeSuperYolo
 		fmt.Fprintln(os.Stderr, "Warning: super yolo mode is active. All commands, including potentially dangerous ones, will be auto-approved without prompting.")
 	} else if yoloCount == 1 {
@@ -378,7 +378,6 @@ func connectToServer(cmd *cobra.Command) (*client.Client, *proto.Workspace, func
 
 	debug, _ := cmd.Flags().GetBool("debug")
 	yoloCount, _ := cmd.Flags().GetCount("yolo")
-	superYolo, _ := cmd.Flags().GetBool("super-yolo")
 	dataDir, _ := cmd.Flags().GetString("data-dir")
 	ctx := cmd.Context()
 
@@ -393,7 +392,7 @@ func connectToServer(cmd *cobra.Command) (*client.Client, *proto.Workspace, func
 	}
 
 	wsPermMode := proto.WorkspacePermissionModeNormal
-	if superYolo || yoloCount > 1 {
+	if yoloCount > 1 {
 		wsPermMode = proto.WorkspacePermissionModeSuperYolo
 		fmt.Fprintln(os.Stderr, "Warning: super yolo mode is active. All commands, including potentially dangerous ones, will be auto-approved without prompting.")
 	} else if yoloCount == 1 {
