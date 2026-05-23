@@ -352,16 +352,12 @@ func writePermissions(b *strings.Builder, cfg *config.ConfigStore) {
 	overrides := cfg.Overrides()
 
 	b.WriteString("[permissions]\n")
-	if overrides.SkipPermissionRequests {
-		switch overrides.PermissionMode {
-		case permission.PermissionModeSuperYolo:
-			b.WriteString("mode = super_yolo\n")
-		case permission.PermissionModeYolo:
-			b.WriteString("mode = yolo\n")
-		default:
-			b.WriteString("mode = yolo\n")
-		}
-	} else {
+	switch overrides.PermissionMode {
+	case permission.PermissionModeSuperYolo:
+		b.WriteString("mode = super_yolo\n")
+	case permission.PermissionModeYolo:
+		b.WriteString("mode = yolo\n")
+	default:
 		b.WriteString("mode = normal\n")
 	}
 	if c.Permissions != nil && len(c.Permissions.AllowedTools) > 0 {

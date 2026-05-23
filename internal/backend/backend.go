@@ -98,7 +98,6 @@ func (b *Backend) CreateWorkspace(args proto.Workspace) (*Workspace, proto.Works
 		return nil, proto.Workspace{}, fmt.Errorf("failed to initialize config: %w", err)
 	}
 
-	cfg.Overrides().SkipPermissionRequests = args.PermissionMode != proto.WorkspacePermissionModeNormal && args.PermissionMode != ""
 	switch args.PermissionMode {
 	case proto.WorkspacePermissionModeSuperYolo:
 		cfg.Overrides().PermissionMode = permission.PermissionModeSuperYolo

@@ -87,13 +87,12 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 	messages := message.NewService(q)
 	files := history.NewService(q, conn)
 	cfg := store.Config()
-	skipPermissionsRequests := store.Overrides().SkipPermissionRequests
 	var allowedTools []string
 	if cfg.Permissions != nil && cfg.Permissions.AllowedTools != nil {
 		allowedTools = cfg.Permissions.AllowedTools
 	}
 
-	permSvc := permission.NewPermissionService(store.WorkingDir(), skipPermissionsRequests, allowedTools)
+	permSvc := permission.NewPermissionService(store.WorkingDir(), allowedTools)
 	if store.Overrides().PermissionMode != 0 {
 		permSvc.SetPermissionMode(store.Overrides().PermissionMode)
 	}

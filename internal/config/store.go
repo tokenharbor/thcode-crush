@@ -32,8 +32,7 @@ type fileSnapshot struct {
 // disk. They are applied on top of the loaded Config and survive only for
 // the lifetime of the process (or workspace).
 type RuntimeOverrides struct {
-	SkipPermissionRequests bool
-	PermissionMode         permission.PermissionMode
+	PermissionMode permission.PermissionMode
 }
 
 // ConfigStore is the single entry point for all config access. It owns the

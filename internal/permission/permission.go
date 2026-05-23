@@ -89,8 +89,6 @@ type Service interface {
 	Deny(permission PermissionRequest)
 	Request(ctx context.Context, opts CreatePermissionRequest) (bool, error)
 	AutoApproveSession(sessionID string)
-	SetSkipRequests(skip bool)
-	SkipRequests() bool
 	SetPermissionMode(mode PermissionMode)
 	PermissionMode() PermissionMode
 	SubscribeNotifications(ctx context.Context) <-chan pubsub.Event[PermissionNotification]
@@ -304,22 +302,6 @@ func (s *permissionService) SubscribeNotifications(ctx context.Context) <-chan p
 	return s.notificationBroker.Subscribe(ctx)
 }
 
-func (s *permissionService) SetSkipRequests(skip bool) {
-	s.modeMu.Lock()
-	if skip {
-		s.mode = PermissionModeYolo
-	} else {
-		s.mode = PermissionModeNormal
-	}
-	s.modeMu.Unlock()
-}
-
-func (s *permissionService) SkipRequests() bool {
-	s.modeMu.RLock()
-	defer s.modeMu.RUnlock()
-	return s.mode != PermissionModeNormal
-}
-
 func (s *permissionService) SetPermissionMode(mode PermissionMode) {
 	s.modeMu.Lock()
 	s.mode = mode
@@ -337,11 +319,7 @@ func (s *permissionService) PermissionMode() PermissionMode {
 	return s.mode
 }
 
-func NewPermissionService(workingDir string, skip bool, allowedTools []string) Service {
-	mode := PermissionModeNormal
-	if skip {
-		mode = PermissionModeYolo
-	}
+func NewPermissionService(workingDir string, allowedTools []string) Service {
 	return &permissionService{
 		Broker:              pubsub.NewBroker[PermissionRequest](),
 		notificationBroker:  pubsub.NewBroker[PermissionNotification](),
@@ -349,7 +327,7 @@ func NewPermissionService(workingDir string, skip bool, allowedTools []string) S
 		workingDir:          workingDir,
 		sessionPermissions:  csync.NewMap[PermissionKey, bool](),
 		autoApproveSessions: make(map[string]bool),
-		mode:                mode,
+		mode:                PermissionModeNormal,
 		allowedTools:        allowedTools,
 		pendingRequests:     csync.NewMap[string, chan bool](),
 	}

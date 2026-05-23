@@ -38,27 +38,6 @@ func (b *Backend) GrantPermission(workspaceID string, req proto.PermissionGrant)
 	return nil
 }
 
-// SetPermissionsSkip sets whether permission prompts are skipped.
-func (b *Backend) SetPermissionsSkip(workspaceID string, skip bool) error {
-	ws, err := b.GetWorkspace(workspaceID)
-	if err != nil {
-		return err
-	}
-
-	ws.Permissions.SetSkipRequests(skip)
-	return nil
-}
-
-// GetPermissionsSkip returns whether permission prompts are skipped.
-func (b *Backend) GetPermissionsSkip(workspaceID string) (bool, error) {
-	ws, err := b.GetWorkspace(workspaceID)
-	if err != nil {
-		return false, err
-	}
-
-	return ws.Permissions.SkipRequests(), nil
-}
-
 // SetPermissionMode sets the permission mode for a workspace.
 func (b *Backend) SetPermissionMode(workspaceID string, mode permission.PermissionMode) error {
 	ws, err := b.GetWorkspace(workspaceID)
