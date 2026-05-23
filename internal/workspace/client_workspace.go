@@ -332,7 +332,9 @@ func (w *ClientWorkspace) PermissionSetMode(mode permission.PermissionMode) {
 	default:
 		protoMode = proto.WorkspacePermissionModeNormal
 	}
-	_ = w.client.SetPermissionMode(context.Background(), w.workspaceID(), protoMode)
+	if err := w.client.SetPermissionMode(context.Background(), w.workspaceID(), protoMode); err == nil {
+		w.refreshWorkspace()
+	}
 }
 
 // -- FileTracker --

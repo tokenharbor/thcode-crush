@@ -110,6 +110,7 @@ type permissionService struct {
 	autoApproveSessionsMu sync.RWMutex
 	allowedTools          []string
 	mode                  PermissionMode
+	modeMu                sync.RWMutex
 
 	// used to make sure we only process one request at a time
 	requestMu       sync.Mutex
@@ -177,13 +178,17 @@ func (s *permissionService) Deny(permission PermissionRequest) {
 }
 
 func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRequest) (bool, error) {
+	s.modeMu.RLock()
+	mode := s.mode
+	s.modeMu.RUnlock()
+
 	// Super yolo mode: auto-approve everything including dangerous commands.
-	if s.mode == PermissionModeSuperYolo {
+	if mode == PermissionModeSuperYolo {
 		return true, nil
 	}
 	// In yolo mode, auto-approve non-dangerous commands but still prompt for
 	// dangerous ones.
-	if s.mode == PermissionModeYolo && !opts.Dangerous {
+	if mode == PermissionModeYolo && !opts.Dangerous {
 		return true, nil
 	}
 
@@ -293,22 +298,30 @@ func (s *permissionService) SubscribeNotifications(ctx context.Context) <-chan p
 }
 
 func (s *permissionService) SetSkipRequests(skip bool) {
+	s.modeMu.Lock()
 	if skip {
 		s.mode = PermissionModeYolo
 	} else {
 		s.mode = PermissionModeNormal
 	}
+	s.modeMu.Unlock()
 }
 
 func (s *permissionService) SkipRequests() bool {
+	s.modeMu.RLock()
+	defer s.modeMu.RUnlock()
 	return s.mode != PermissionModeNormal
 }
 
 func (s *permissionService) SetPermissionMode(mode PermissionMode) {
+	s.modeMu.Lock()
 	s.mode = mode
+	s.modeMu.Unlock()
 }
 
 func (s *permissionService) PermissionMode() PermissionMode {
+	s.modeMu.RLock()
+	defer s.modeMu.RUnlock()
 	return s.mode
 }
 
