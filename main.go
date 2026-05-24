@@ -1,12 +1,12 @@
-// Package main is the entry point for the Crush CLI.
+// Package main is the entry point for the thcode CLI (Token Harbor).
 //
-//	@title			Crush API
+//	@title			thcode API
 //	@version		1.0
-//	@description	Crush is a terminal-based AI coding assistant. This API is served over a Unix socket (or Windows named pipe) and provides programmatic access to workspaces, sessions, agents, LSP, MCP, and more.
-//	@contact.name	Charm
-//	@contact.url	https://charm.sh
+//	@description	thcode is Token Harbor's terminal-based AI coding agent. This API is served over a Unix socket (or Windows named pipe) and provides programmatic access to workspaces, sessions, agents, LSP, MCP, and more.
+//	@contact.name	Token Harbor
+//	@contact.url	https://tokenharbor.ai
 //	@license.name	MIT
-//	@license.url	https://github.com/charmbracelet/crush/blob/main/LICENSE
+//	@license.url	https://github.com/tokenharbor/thcode-crush/blob/main/LICENSE
 //	@BasePath		/v1
 package main
 

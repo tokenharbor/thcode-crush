@@ -20,8 +20,8 @@ import (
 )
 
 const (
-	appName              = "crush"
-	defaultDataDirectory = ".crush"
+	appName              = "thcode"
+	defaultDataDirectory = ".thcode"
 	defaultInitializeAs  = "AGENTS.md"
 )
 

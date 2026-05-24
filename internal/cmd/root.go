@@ -75,33 +75,33 @@ func init() {
 }
 
 var rootCmd = &cobra.Command{
-	Use:   "crush",
-	Short: "A terminal-first AI assistant for software development",
-	Long:  "A glamorous, terminal-first AI assistant for software development and adjacent tasks",
+	Use:   "thcode",
+	Short: "Token Harbor's terminal coding agent",
+	Long:  "thcode is Token Harbor's terminal-first AI coding agent — every model on Token Harbor, one key, no markup.",
 	Example: `
 # Run in interactive mode
-crush
+thcode
 
 # Run non-interactively
-crush run "Guess my 5 favorite Pokémon"
+thcode run "List the files in this repo"
 
 # Run a non-interactively with pipes and redirection
-cat README.md | crush run "make this more glamorous" > GLAMOROUS_README.md
+cat README.md | thcode run "summarize this" > summary.md
 
 # Run with debug logging in a specific directory
-crush --debug --cwd /path/to/project
+thcode --debug --cwd /path/to/project
 
 # Run in yolo mode (auto-accept all permissions; use with care)
-crush --yolo
+thcode --yolo
 
 # Run with custom data directory
-crush --data-dir /path/to/custom/.crush
+thcode --data-dir /path/to/custom/.thcode
 
 # Continue a previous session
-crush --session {session-id}
+thcode --session {session-id}
 
 # Continue the most recent session
-crush --continue
+thcode --continue
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sessionID, _ := cmd.Flags().GetString("session")
@@ -138,7 +138,7 @@ crush --continue
 		if _, err := program.Run(); err != nil {
 			event.Error(err)
 			slog.Error("TUI run error", "error", err)
-			return errors.New("Crush crashed. If metrics are enabled, we were notified about it. If you'd like to report it, please copy the stacktrace above and open an issue at https://github.com/charmbracelet/crush/issues/new?template=bug.yml") //nolint:staticcheck
+			return errors.New("thcode crashed. Please copy the stacktrace above and open an issue at https://github.com/tokenharbor/thcode-crush/issues/new") //nolint:staticcheck
 		}
 		return nil
 	},

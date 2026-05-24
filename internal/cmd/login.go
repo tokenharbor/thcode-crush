@@ -22,19 +22,19 @@ import (
 var loginCmd = &cobra.Command{
 	Aliases: []string{"auth"},
 	Use:     "login [platform]",
-	Short:   "Login Crush to a platform",
-	Long: `Login Crush to a specified platform.
+	Short:   "Login thcode to a platform",
+	Long: `Login thcode to a specified platform.
 The platform should be provided as an argument.
 Available platforms are: hyper, copilot.`,
 	Example: `
 # Authenticate with Charm Hyper
-crush login
+thcode login
 
 # Authenticate with GitHub Copilot
-crush login copilot
+thcode login copilot
 
 # Force re-authentication even if already logged in
-crush login -f copilot
+thcode login -f copilot
   `,
 	ValidArgs: []cobra.Completion{
 		"hyper",

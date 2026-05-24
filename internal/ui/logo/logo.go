@@ -1,10 +1,13 @@
-// Package logo renders a Crush wordmark in a stylized way.
+// Package logo renders a Token Harbor / thcode wordmark in a stylized way.
+//
+// Forked from charmbracelet/crush — replaced the Crush C-R-U-S-H ASCII
+// letterform wordmark with a simple bold gradient "thcode" title and
+// "Token Harbor" subtitle, framed by the same diagonal-slash fields.
 package logo
 
 import (
 	"fmt"
 	"image/color"
-	"math/rand/v2"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -12,119 +15,71 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// letterform represents a letterform. It can be stretched horizontally by
-// a given amount via the boolean argument.
-type letterform func(bool) string
-
 const diag = `╱`
 
-// Opts are the options for rendering the Crush title art.
+// Opts are the options for rendering the thcode title art.
 type Opts struct {
 	FieldColor   color.Color // diagonal lines
 	TitleColorA  color.Color // left gradient ramp point
 	TitleColorB  color.Color // right gradient ramp point
-	CharmColor   color.Color // Charm™ text color
+	CharmColor   color.Color // brand text color (was Charm™, now "Token Harbor")
 	VersionColor color.Color // version text color
 	Width        int         // width of the rendered logo, used for truncation
-	Hyper        bool        // whether it is Crush or Hypercrush
 
-	// When true, stretch a random letterform on each render. Has no effect in
-	// compact mode. Mainly for testing. In production you will want to cache
-	// the stretched letterform to keep the logo from jittering on resize.
-	Unstable bool
+	// Hyper is preserved for upstream-API parity. In the Token Harbor
+	// distribution there is no separate Hyper-prefixed variant — the
+	// flag is ignored.
+	Hyper    bool
+	Unstable bool // unused — preserved for upstream-API parity
 }
 
-// Render renders the Crush logo. Set the argument to true to render the narrow
-// version, intended for use in a sidebar.
-//
-// The compact argument determines whether it renders compact for the sidebar
-// or wider for the main pane.
+// Render renders the thcode logo. The compact argument determines whether
+// it renders compact for the sidebar or wider for the main pane.
 func Render(base lipgloss.Style, version string, compact bool, o Opts) string {
-	charm := "Charm™"
-	if !o.Hyper {
-		charm = " " + charm
-	}
+	const brand = "Token Harbor"
+	const wordmark = "thcode"
 
 	fg := func(c color.Color, s string) string {
 		return lipgloss.NewStyle().Foreground(c).Render(s)
 	}
 
-	// Title.
-	const spacing = 1
-	var hyperLetterforms []letterform
-	if o.Hyper {
-		hyperLetterforms = []letterform{
-			LetterH,
-			LetterYAlt,
-			LetterP,
-			LetterE,
-			LetterR,
-		}
-	}
-	crushLetterforms := []letterform{
-		LetterC,
-		LetterR,
-		LetterU,
-		LetterSAlt,
-		LetterH,
-	}
-	if o.Hyper && !compact {
-		crushLetterforms = append(hyperLetterforms, crushLetterforms...)
-	}
+	// Render the wordmark as a bold gradient (single line). Width
+	// matches the visible width of the rendered string so the framing
+	// diagonals line up.
+	title := styles.ApplyBoldForegroundGrad(base, wordmark, o.TitleColorA, o.TitleColorB)
+	titleWidth := lipgloss.Width(title)
 
-	stretchIndex := -1 // -1 means no stretching.
-	if !compact && !o.Unstable {
-		// Always stretch the same letterform, which is picked once at random.
-		stretchIndex = cachedRandN(len(crushLetterforms))
-	} else if !compact && o.Unstable {
-		// Stretch a random letterform on every render.
-		stretchIndex = rand.IntN(len(crushLetterforms))
-	}
-	crush := renderWord(spacing, stretchIndex, crushLetterforms...)
-	if o.Hyper && compact {
-		crush = renderWord(spacing, stretchIndex, hyperLetterforms...) + "\n" + crush
-	}
-	crushWidth := lipgloss.Width(crush)
-	b := new(strings.Builder)
-	for r := range strings.SplitSeq(crush, "\n") {
-		fmt.Fprintln(b, styles.ApplyForegroundGrad(base, r, o.TitleColorA, o.TitleColorB))
-	}
-	crush = b.String()
-
-	// Charm and version.
+	// Meta row: brand on the left, version on the right, with the brand
+	// reserved width so the row never overlaps the version.
 	metaRowGap := 1
-	maxVersionWidth := crushWidth - lipgloss.Width(charm) - metaRowGap
-	version = ansi.Truncate(version, maxVersionWidth, "…") // truncate version if too long.
-	if o.Hyper && compact {
-		version += " "
-	}
-	gap := max(0, crushWidth-lipgloss.Width(charm)-lipgloss.Width(version))
-	metaRow := fg(o.CharmColor, charm) + strings.Repeat(" ", gap) + fg(o.VersionColor, version)
+	maxVersionWidth := max(0, titleWidth-lipgloss.Width(brand)-metaRowGap)
+	version = ansi.Truncate(version, maxVersionWidth, "…")
+	gap := max(0, titleWidth-lipgloss.Width(brand)-lipgloss.Width(version))
+	metaRow := fg(o.CharmColor, brand) + strings.Repeat(" ", gap) + fg(o.VersionColor, version)
 
-	// Join the meta row and big Crush title.
-	crush = strings.TrimSpace(metaRow + "\n" + crush)
+	body := strings.TrimSpace(metaRow + "\n" + title)
 
-	// Narrow version. If this is Hypercrush, this is also a stacked version.
+	// Compact (sidebar) version: diagonal fields above + below.
 	if compact {
-		field := fg(o.FieldColor, strings.Repeat(diag, crushWidth))
-		return strings.Join([]string{field, field, crush, field, ""}, "\n")
+		field := fg(o.FieldColor, strings.Repeat(diag, titleWidth))
+		return strings.Join([]string{field, field, body, field, ""}, "\n")
 	}
 
-	fieldHeight := lipgloss.Height(crush)
+	bodyHeight := lipgloss.Height(body)
 
 	// Left field.
 	const leftWidth = 6
 	leftFieldRow := fg(o.FieldColor, strings.Repeat(diag, leftWidth))
 	leftField := new(strings.Builder)
-	for range fieldHeight {
+	for range bodyHeight {
 		fmt.Fprintln(leftField, leftFieldRow)
 	}
 
-	// Right field.
-	rightWidth := max(15, o.Width-crushWidth-leftWidth-2) // 2 for the gap.
+	// Right field — diminishes by 1 char per row for a stair-step look.
+	rightWidth := max(15, o.Width-titleWidth-leftWidth-2)
 	const stepDownAt = 0
 	rightField := new(strings.Builder)
-	for i := range fieldHeight {
+	for i := range bodyHeight {
 		width := rightWidth
 		if i >= stepDownAt {
 			width = rightWidth - (i - stepDownAt)
@@ -132,11 +87,9 @@ func Render(base lipgloss.Style, version string, compact bool, o Opts) string {
 		fmt.Fprint(rightField, fg(o.FieldColor, strings.Repeat(diag, width)), "\n")
 	}
 
-	// Return the wide version.
 	const hGap = " "
-	logo := lipgloss.JoinHorizontal(lipgloss.Top, leftField.String(), hGap, crush, hGap, rightField.String())
+	logo := lipgloss.JoinHorizontal(lipgloss.Top, leftField.String(), hGap, body, hGap, rightField.String())
 	if o.Width > 0 {
-		// Truncate the logo to the specified width.
 		lines := strings.Split(logo, "\n")
 		for i, line := range lines {
 			lines[i] = ansi.Truncate(line, o.Width, "")
@@ -146,20 +99,14 @@ func Render(base lipgloss.Style, version string, compact bool, o Opts) string {
 	return logo
 }
 
-// SmallRender renders a smaller version of the Crush logo, suitable for
-// smaller windows or sidebar usage.
+// SmallRender renders a smaller, single-line version of the thcode logo,
+// suitable for sidebars or narrow windows.
 func SmallRender(t *styles.Styles, width int, o Opts) string {
-	name := "Crush"
-	if o.Hyper {
-		name = "HYPERCRUSH"
-	}
-	charm := "Charm™"
-	if !o.Hyper {
-		charm = " " + charm
-	}
-	title := t.Logo.SmallCharm.Render(charm)
-	title = fmt.Sprintf("%s %s", title, styles.ApplyBoldForegroundGrad(t.Logo.GradCanvas, name, t.Logo.SmallGradFromColor, t.Logo.SmallGradToColor))
-	remainingWidth := width - lipgloss.Width(title) - 1 // 1 for the space after the name
+	const brand = "Token Harbor"
+	const wordmark = "thcode"
+	title := t.Logo.SmallCharm.Render(brand)
+	title = fmt.Sprintf("%s %s", title, styles.ApplyBoldForegroundGrad(t.Logo.GradCanvas, wordmark, t.Logo.SmallGradFromColor, t.Logo.SmallGradToColor))
+	remainingWidth := width - lipgloss.Width(title) - 1
 	if remainingWidth > 0 {
 		lines := strings.Repeat("╱", remainingWidth)
 		title = fmt.Sprintf("%s %s", title, t.Logo.SmallDiagonals.Render(lines))
