@@ -45,16 +45,12 @@ func newHeader(com *common.Common) *header {
 // after the theme changes.
 func (h *header) refresh() {
 	t := h.com.Styles
-	isHyper := h.com.IsHyper()
-	charm := "Charm™"
-	if !isHyper {
-		charm = " " + charm
-	}
-	name := "CRUSH"
-	if isHyper {
-		name = "HYPERCRUSH"
-	}
-	h.compactLogo = t.Header.Charm.Render(charm) + " " +
+	// Token Harbor brand: drop the "Charm™" / CRUSH / HYPERCRUSH variants
+	// and render a single brand line + wordmark. IsHyper has no meaning in
+	// this distribution.
+	brand := "Token Harbor "
+	name := "thcode"
+	h.compactLogo = t.Header.Charm.Render(brand) +
 		styles.ApplyBoldForegroundGrad(t.Header.LogoGradCanvas, name, t.Header.LogoGradFromColor, t.Header.LogoGradToColor) + " "
 	// Force drawHeader to re-render the wide logo on the next frame.
 	h.width = 0
