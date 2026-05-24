@@ -246,13 +246,6 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 		agentTools[len(agentTools)-1].SetProviderOptions(a.getCacheControlOptions())
 	}
 
-	agent := fantasy.NewAgent(
-		largeModel.Model,
-		fantasy.WithSystemPrompt(systemPrompt),
-		fantasy.WithTools(agentTools...),
-		fantasy.WithUserAgent(userAgent),
-	)
-
 	sessionLock := sync.Mutex{}
 	currentSession, err := a.sessions.Get(ctx, call.SessionID)
 	if err != nil {
@@ -263,6 +256,47 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 	if err != nil {
 		return nil, fmt.Errorf("failed to get session messages: %w", err)
 	}
+
+	// Multi-role per-turn model selection (Phase 2).
+	//
+	// Classify the role for THIS user turn once, then bind the
+	// chosen role's underlying Model to fantasy.NewAgent. The model
+	// stays put across the tool-use loop within this user turn
+	// (industry standard — Anthropic / Claude Code do the same:
+	// model is picked at the start, doesn't swap mid-task).
+	//
+	// Falls back to largeModel when:
+	//   - Roles map is empty (legacy single-model users)
+	//   - The picked role isn't configured in Roles
+	//   - The picked role's model failed to build (see coordinator
+	//     buildRoleModels: failures log warnings but don't block)
+	classifierHistory := make([]fantasy.Message, 0, len(msgs)*2)
+	for _, m := range msgs {
+		classifierHistory = append(classifierHistory, m.ToAIMessage()...)
+	}
+	turnRole := ClassifyRole(ClassifyInputs{
+		UserMessage:     call.Prompt,
+		History:         classifierHistory,
+		ForcedRole:      a.forcedRole.Get(),
+		SkillRole:       config.RoleType(""), // wired in Phase 1.5
+		ShouldSummarize: false,
+	})
+	// One-shot consumption of /role override happens here at the user-turn
+	// boundary; PrepareStep does not re-consume it.
+	a.forcedRole.Set(config.RoleType(""))
+	a.currentRole.Set(turnRole)
+
+	turnModel := largeModel
+	if rm, ok := a.roles.Get(turnRole); ok && rm.Model != nil {
+		turnModel = rm
+	}
+
+	agent := fantasy.NewAgent(
+		turnModel.Model,
+		fantasy.WithSystemPrompt(systemPrompt),
+		fantasy.WithTools(agentTools...),
+		fantasy.WithUserAgent(userAgent),
+	)
 
 	var wg sync.WaitGroup
 	// Generate title if first message.
@@ -298,7 +332,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 		}
 	}()
 
-	history, files := a.preparePrompt(msgs, largeModel.CatwalkCfg.SupportsImages, call.Attachments...)
+	history, files := a.preparePrompt(msgs, turnModel.CatwalkCfg.SupportsImages, call.Attachments...)
 
 	startTime := time.Now()
 	a.eventPromptSent(call.SessionID)
@@ -341,7 +375,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 				prepared.Messages = append(prepared.Messages, userMessage.ToAIMessage()...)
 			}
 
-			prepared.Messages = a.workaroundProviderMediaLimitations(prepared.Messages, largeModel)
+			prepared.Messages = a.workaroundProviderMediaLimitations(prepared.Messages, turnModel)
 
 			lastSystemRoleInx := 0
 			systemMessageUpdated := false
@@ -359,26 +393,13 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 				}
 			}
 
-			// Multi-role classifier. Picks the role for THIS turn based on
-			// history, user message, forced override, and skill hint. The
-			// chosen role's prompt addendum is appended to systemPromptPrefix
-			// so the model gets a clear "you are now in <role> mode" hint
-			// even when the underlying model itself doesn't swap (the
-			// per-turn model swap is wired in Phase 2 of the multi-role
-			// rollout — see internal/agent/role_router.go).
-			pickedRole := ClassifyRole(ClassifyInputs{
-				UserMessage:     call.Prompt,
-				History:         prepared.Messages,
-				ForcedRole:      a.forcedRole.Get(),
-				SkillRole:       config.RoleType(""), // TODO: wire skill preferred-role
-				ShouldSummarize: false,                // summarize path bypasses PrepareStep
-			})
-			a.currentRole.Set(pickedRole)
-			// One-shot semantics: clear the forced role after we consumed it.
-			a.forcedRole.Set(config.RoleType(""))
-
+			// Multi-role: the role decision was made once at the user-turn
+			// boundary (see classify call above NewAgent) and the resulting
+			// underlying model is already bound on the fantasy.Agent. Here
+			// we just inject the corresponding system-prompt addendum and
+			// stamp the assistant message with the role's attribution model.
 			var roleAddendum string
-			if v, ok := a.rolePromptAddenda.Get(pickedRole); ok {
+			if v, ok := a.rolePromptAddenda.Get(turnRole); ok {
 				roleAddendum = v
 			}
 
@@ -398,29 +419,19 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 			stepMessages = cloneFantasyMessages(prepared.Messages)
 			sessionLock.Unlock()
 
-			// Resolve the model attribution shown in the message log. When
-			// Roles is populated AND the picked role has its own Model
-			// configured, attribute the assistant turn to that model so
-			// the user (and request_traces) see who actually answered.
-			// Otherwise attribute to largeModel as before.
-			attribModel := largeModel.ModelCfg
-			if v, ok := a.roles.Get(pickedRole); ok && v.ModelCfg.Model != "" {
-				attribModel = v.ModelCfg
-			}
-
 			var assistantMsg message.Message
 			assistantMsg, err = a.messages.Create(callContext, call.SessionID, message.CreateMessageParams{
 				Role:     message.Assistant,
 				Parts:    []message.ContentPart{},
-				Model:    attribModel.Model,
-				Provider: attribModel.Provider,
+				Model:    turnModel.ModelCfg.Model,
+				Provider: turnModel.ModelCfg.Provider,
 			})
 			if err != nil {
 				return callContext, prepared, err
 			}
 			callContext = context.WithValue(callContext, tools.MessageIDContextKey, assistantMsg.ID)
-			callContext = context.WithValue(callContext, tools.SupportsImagesContextKey, largeModel.CatwalkCfg.SupportsImages)
-			callContext = context.WithValue(callContext, tools.ModelNameContextKey, largeModel.CatwalkCfg.Name)
+			callContext = context.WithValue(callContext, tools.SupportsImagesContextKey, turnModel.CatwalkCfg.SupportsImages)
+			callContext = context.WithValue(callContext, tools.ModelNameContextKey, turnModel.CatwalkCfg.Name)
 			currentAssistant = &assistantMsg
 			return callContext, prepared, err
 		},
@@ -534,7 +545,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 				return getSessionErr
 			}
 			usage, estimated := fallbackStepUsage(stepMessages, stepResult)
-			a.updateSessionUsage(largeModel, &updatedSession, usage, a.openrouterCost(stepResult.ProviderMetadata), estimated)
+			a.updateSessionUsage(turnModel, &updatedSession, usage, a.openrouterCost(stepResult.ProviderMetadata), estimated)
 			_, sessionErr := a.sessions.Save(ctx, updatedSession)
 			if sessionErr != nil {
 				return sessionErr
@@ -544,7 +555,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 		},
 		StopWhen: []fantasy.StopCondition{
 			func(_ []fantasy.StepResult) bool {
-				cw := int64(largeModel.CatwalkCfg.ContextWindow)
+				cw := int64(turnModel.CatwalkCfg.ContextWindow)
 				// If context window is unknown (0), skip auto-summarize
 				// to avoid immediately truncating custom/local models.
 				if cw == 0 {
@@ -573,7 +584,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 	a.eventPromptResponded(call.SessionID, time.Since(startTime).Truncate(time.Second))
 
 	if err != nil {
-		isHyper := largeModel.ModelCfg.Provider == hyper.Name
+		isHyper := turnModel.ModelCfg.Provider == hyper.Name
 		isCancelErr := errors.Is(err, context.Canceled)
 		if currentAssistant == nil {
 			return result, err
@@ -647,7 +658,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 					SessionID:    call.SessionID,
 					SessionTitle: currentSession.Title,
 					Type:         notify.TypeReAuthenticate,
-					ProviderID:   largeModel.ModelCfg.Provider,
+					ProviderID:   turnModel.ModelCfg.Provider,
 				})
 			}
 		} else if isHyper && errors.As(err, &providerErr) && providerErr.StatusCode == http.StatusPaymentRequired {
@@ -661,7 +672,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 				currentAssistant.AddFinish(
 					message.FinishReasonError,
 					"Copilot model not enabled",
-					fmt.Sprintf("%q is not enabled in Copilot. Go to the following page to enable it. Then, wait 5 minutes before trying again. %s", largeModel.CatwalkCfg.Name, link),
+					fmt.Sprintf("%q is not enabled in Copilot. Go to the following page to enable it. Then, wait 5 minutes before trying again. %s", turnModel.CatwalkCfg.Name, link),
 				)
 			} else {
 				currentAssistant.AddFinish(message.FinishReasonError, cmp.Or(stringext.Capitalize(providerErr.Title), defaultTitle), providerErr.Message)

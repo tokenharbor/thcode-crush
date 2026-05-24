@@ -28,11 +28,35 @@ import (
 	"github.com/charmbracelet/crush/internal/config"
 )
 
-// reviewIntent matches user messages that explicitly request code
-// review or critique, in English or Chinese. Generous matching: we'd
-// rather route a few extra turns to the reviewer than miss them.
+// Intent-keyword regexes — checked BEFORE looking at last-tool history
+// so the classifier can route a single-turn user request to the right
+// specialist without waiting for an assistant tool call to materialize.
+//
+// Rule of thumb: phrase these to match strong, unambiguous verbs.
+// Mismatches are recoverable (we always fall back to planner) so we'd
+// rather be a little eager than miss the obvious cases.
+
 var reviewIntent = regexp.MustCompile(
-	`(?i)(\breview\b|\bcritique\b|\baudit\b|\binspect\b|\blook\s+for\s+(bugs?|issues?|problems?)\b|审核|检查|代码评审|挑错|找(?:个|出)?(?:bug|错误|问题))`,
+	`(?i)(\breview\b|\bcritique\b|\baudit\b|\binspect\b|\blook\s+for\s+(bugs?|issues?|problems?)\b|审核|检查|代码评审|挑错|找(?:个|出)?(?:bug|错误|问题)|code\s+review)`,
+)
+
+// Code-modification intent: explicit edit / refactor / fix verbs.
+var coderIntent = regexp.MustCompile(
+	`(?i)(\bedit\b|\brefactor\b|\bimplement\b|\bfix\b|\brename\b|\bconvert\b|\bchange\b|\bupdate\b|\brewrite\b|\bbump\b|\badd\b|\bremove\b|\bdelete\b|\binstall\b|\brun\b|\bbuild\b|\btest\b|\bcommit\b|\bpush\b|改成?|重构|实现|修改|修复|重命名|换成|升级|安装|运行|构建|测试|提交|添加|删除|新增|去掉)`,
+)
+
+// Lookup / browse intent: read / search / find. Routes to the cheaper
+// fetcher tier because the heavy lifting is tool I/O, not reasoning.
+var fetcherIntent = regexp.MustCompile(
+	`(?i)(\bfind\b|\bsearch\b|\bgrep\b|\blook\s+up\b|\blocate\b|\bwhere\s+is\b|\bsummari[sz]e\b|\blist\b|\bshow\s+me\b|\bread\b|\bfetch\b|查找|搜(?:索|一下)?|寻找|找(?:一下|找)?|定位|哪里|总结|读取|展示|列出)`,
+)
+
+// Planning intent — explicit "design / plan / architecture" verbs.
+// Match before the default-to-planner fallback so the planner addendum
+// fires with strong confidence (and we don't have to rely on the
+// "no prior tool calls" default kicking in).
+var plannerIntent = regexp.MustCompile(
+	`(?i)(\bplan\b|\bdesign\b|\barchitect(?:ure)?\b|\bblueprint\b|\boutline\b|\bstrategi[sz]e\b|\bbreak\s+down\b|\bhow\s+(?:should|would|do)\s+i\b|规划|设计|架构|蓝图|拆解|思路|怎么(?:做|实现)|如何(?:做|实现))`,
 )
 
 // Tools whose presence in the last assistant turn indicates the agent
@@ -87,30 +111,55 @@ type ClassifyInputs struct {
 
 // ClassifyRole picks the role for the next agent turn. Pure function;
 // no I/O. Falls back to RolePlanner when no signal matches.
+//
+// Routing priority (first-match wins):
+//   1. ShouldSummarize          → summarizer
+//   2. Forced role              → that role
+//   3. Skill preferred-role     → that role
+//   4. Review-intent regex      → reviewer
+//   5. Planner-intent regex     → planner
+//   6. Coder-intent regex       → coder
+//   7. Fetcher-intent regex     → fetcher
+//   8. Last assistant turn tool calls (edit → coder, fetch → fetcher)
+//   9. Default                  → planner
+//
+// Intent-keyword rules (4-7) fire BEFORE last-tool-call rules so the
+// classifier works on the FIRST user turn of a single-shot run, not
+// only after a multi-step session has accumulated tool history.
 func ClassifyRole(in ClassifyInputs) config.RoleType {
-	// 1. Auto-summarize wins absolutely.
 	if in.ShouldSummarize {
 		return config.RoleSummarizer
 	}
-
-	// 2. Forced role beats everything except summarize. The classifier
-	//    doesn't consume the forced value; it's the caller's job to
-	//    clear it after the turn (one-shot semantics).
 	if isKnownRole(in.ForcedRole) {
 		return in.ForcedRole
 	}
-
-	// 3. Skill-declared role.
 	if isKnownRole(in.SkillRole) {
 		return in.SkillRole
 	}
 
-	// 4. Explicit review intent in user message.
-	if reviewIntent.MatchString(in.UserMessage) {
-		return config.RoleReviewer
+	// Intent-keyword routing on the user's text. Order matters:
+	// review > planner > coder > fetcher. Reviewer wins if the user
+	// said both "review and refactor" — explicit critique requests
+	// shouldn't be silently downgraded to code mode.
+	if in.UserMessage != "" {
+		if reviewIntent.MatchString(in.UserMessage) {
+			return config.RoleReviewer
+		}
+		if plannerIntent.MatchString(in.UserMessage) {
+			return config.RolePlanner
+		}
+		if coderIntent.MatchString(in.UserMessage) {
+			return config.RoleCoder
+		}
+		if fetcherIntent.MatchString(in.UserMessage) {
+			return config.RoleFetcher
+		}
 	}
 
-	// 5/6. Look at the last assistant turn's tool calls.
+	// Continuation: look at what the assistant just did. This handles
+	// multi-step sessions where the user message itself is sparse
+	// (e.g. "continue" / "ok") but the last tool call telegraphs the
+	// active phase.
 	if lastTools := lastAssistantToolNames(in.History); len(lastTools) > 0 {
 		// Edit tools dominate (a fetch+edit turn is still a coder turn).
 		for name := range lastTools {
@@ -125,7 +174,6 @@ func ClassifyRole(in ClassifyInputs) config.RoleType {
 		}
 	}
 
-	// 7/8. No prior tool calls or unrecognized tool — fresh planning.
 	return config.RolePlanner
 }
 
