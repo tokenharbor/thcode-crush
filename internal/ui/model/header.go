@@ -49,7 +49,7 @@ func (h *header) refresh() {
 	// and render a single brand line + wordmark. IsHyper has no meaning in
 	// this distribution.
 	brand := "Token Harbor "
-	name := "thcode"
+	name := "THcoder"
 	h.compactLogo = t.Header.Charm.Render(brand) +
 		styles.ApplyBoldForegroundGrad(t.Header.LogoGradCanvas, name, t.Header.LogoGradFromColor, t.Header.LogoGradToColor) + " "
 	// Force drawHeader to re-render the wide logo on the next frame.

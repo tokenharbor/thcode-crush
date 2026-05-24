@@ -33,11 +33,11 @@ type Opts struct {
 	Unstable bool // unused — preserved for upstream-API parity
 }
 
-// Render renders the thcode logo. The compact argument determines whether
-// it renders compact for the sidebar or wider for the main pane.
+// Render renders the THcoder logo. The compact argument determines
+// whether it renders compact for the sidebar or wider for the main pane.
 func Render(base lipgloss.Style, version string, compact bool, o Opts) string {
 	const brand = "Token Harbor"
-	const wordmark = "thcode"
+	const wordmark = "THcoder"
 
 	fg := func(c color.Color, s string) string {
 		return lipgloss.NewStyle().Foreground(c).Render(s)
@@ -99,11 +99,11 @@ func Render(base lipgloss.Style, version string, compact bool, o Opts) string {
 	return logo
 }
 
-// SmallRender renders a smaller, single-line version of the thcode logo,
-// suitable for sidebars or narrow windows.
+// SmallRender renders a smaller, single-line version of the THcoder
+// logo, suitable for sidebars or narrow windows.
 func SmallRender(t *styles.Styles, width int, o Opts) string {
 	const brand = "Token Harbor"
-	const wordmark = "thcode"
+	const wordmark = "THcoder"
 	title := t.Logo.SmallCharm.Render(brand)
 	title = fmt.Sprintf("%s %s", title, styles.ApplyBoldForegroundGrad(t.Logo.GradCanvas, wordmark, t.Logo.SmallGradFromColor, t.Logo.SmallGradToColor))
 	remainingWidth := width - lipgloss.Width(title) - 1
