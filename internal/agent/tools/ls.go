@@ -158,12 +158,30 @@ func ListDirectoryTree(searchPath string, params LSParams, lsConfig config.ToolL
 	}
 	tree := createFileTree(files, searchPath)
 
-	var output string
+	// Upstream had a bug here: the `if depth > 0` branch silently
+	// overwrote the truncation banner, so on a 100K-file project the
+	// model saw "shown up to depth N" but never the more important
+	// "TOOL OUTPUT TRUNCATED — use glob instead" signal. Models then
+	// hallucinated that the *user's message* was truncated.
+	//
+	// Emit BOTH banners, prefixed with an explicit, machine-readable
+	// header so the model can't miss the cap.
+	var lines []string
 	if truncated {
-		output = fmt.Sprintf("There are more than %d files in the directory. Use a more specific path or use the Glob tool to find specific files. The first %[1]d files and directories are included below.\n", maxFiles)
+		lines = append(lines, fmt.Sprintf(
+			"[TOOL OUTPUT TRUNCATED] This directory contains more than %d entries. The listing below is the first %[1]d entries only — the FULL contents were NOT enumerated. Do NOT treat this as the user's request being truncated; it is the `ls` tool's own cap. To find specific files in this directory, use the `glob` tool with a pattern (e.g. `glob '**/*.md'`) or `grep` to search file contents. Do not retry `ls` on the same path expecting a different result.",
+			maxFiles,
+		))
 	}
 	if depth > 0 {
-		output = fmt.Sprintf("The directory tree is shown up to a depth of %d. Use a higher depth and a specific path to see more levels.\n", cmp.Or(params.Depth, depth))
+		lines = append(lines, fmt.Sprintf(
+			"The directory tree is shown up to a depth of %d. To see deeper levels, call `ls` again with a more specific path or a higher depth, or use `glob` for a pattern-based search.",
+			cmp.Or(params.Depth, depth),
+		))
+	}
+	output := strings.Join(lines, "\n")
+	if output != "" {
+		output += "\n"
 	}
 	return output + "\n" + printTree(tree, searchPath), metadata, nil
 }
