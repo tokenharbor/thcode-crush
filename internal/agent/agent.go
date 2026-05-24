@@ -97,6 +97,13 @@ type SessionAgent interface {
 	ClearQueue(sessionID string)
 	Summarize(context.Context, string, fantasy.ProviderOptions) error
 	Model() Model
+
+	// Multi-role coordination (Token Harbor extension).
+	// SetForcedRole pins the role for the NEXT turn (one-shot — cleared
+	// after consumption). Pass "" to clear. CurrentRole returns the
+	// role picked for the most recent turn; empty until the first run.
+	SetForcedRole(role config.RoleType)
+	CurrentRole() config.RoleType
 }
 
 type Model struct {
@@ -112,6 +119,19 @@ type sessionAgent struct {
 	systemPromptPrefix *csync.Value[string]
 	systemPrompt       *csync.Value[string]
 	tools              *csync.Slice[fantasy.AgentTool]
+
+	// Multi-role coordination (Token Harbor extension). When roles is
+	// empty, behaves identically to upstream single-model Crush.
+	//
+	// roles            : role → Model (built by coordinator from config.Roles).
+	// rolePromptAddenda: role → system-prompt fragment appended for that role.
+	// forcedRole       : `/role <name>` one-shot override, cleared after consume.
+	// currentRole      : the role picked for the most recent turn — UI reads
+	//                    this to show the "◇ <role>: <model>" pill.
+	roles             *csync.Map[config.RoleType, Model]
+	rolePromptAddenda *csync.Map[config.RoleType, string]
+	forcedRole        *csync.Value[config.RoleType]
+	currentRole       *csync.Value[config.RoleType]
 
 	isSubAgent           bool
 	sessions             session.Service
@@ -136,16 +156,39 @@ type SessionAgentOptions struct {
 	Messages             message.Service
 	Tools                []fantasy.AgentTool
 	Notify               pubsub.Publisher[notify.Notification]
+
+	// Roles is an optional role → Model map for multi-agent routing.
+	// When nil/empty, every turn uses LargeModel (legacy behavior).
+	Roles map[config.RoleType]Model
+	// RolePromptAddenda overrides the built-in
+	// DefaultRolePromptAddenda. Unset roles fall back to defaults.
+	RolePromptAddenda map[config.RoleType]string
 }
 
 func NewSessionAgent(
 	opts SessionAgentOptions,
 ) SessionAgent {
+	rolesMap := csync.NewMap[config.RoleType, Model]()
+	for r, m := range opts.Roles {
+		rolesMap.Set(r, m)
+	}
+	addendaMap := csync.NewMap[config.RoleType, string]()
+	for r, addendum := range DefaultRolePromptAddenda {
+		addendaMap.Set(r, addendum)
+	}
+	for r, addendum := range opts.RolePromptAddenda {
+		// User override wins over built-in default.
+		addendaMap.Set(r, addendum)
+	}
 	return &sessionAgent{
 		largeModel:           csync.NewValue(opts.LargeModel),
 		smallModel:           csync.NewValue(opts.SmallModel),
 		systemPromptPrefix:   csync.NewValue(opts.SystemPromptPrefix),
 		systemPrompt:         csync.NewValue(opts.SystemPrompt),
+		roles:                rolesMap,
+		rolePromptAddenda:    addendaMap,
+		forcedRole:           csync.NewValue(config.RoleType("")),
+		currentRole:          csync.NewValue(config.RoleType("")),
 		isSubAgent:           opts.IsSubAgent,
 		sessions:             opts.Sessions,
 		messages:             opts.Messages,
@@ -316,20 +359,61 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 				}
 			}
 
-			if promptPrefix != "" {
-				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(promptPrefix)}, prepared.Messages...)
+			// Multi-role classifier. Picks the role for THIS turn based on
+			// history, user message, forced override, and skill hint. The
+			// chosen role's prompt addendum is appended to systemPromptPrefix
+			// so the model gets a clear "you are now in <role> mode" hint
+			// even when the underlying model itself doesn't swap (the
+			// per-turn model swap is wired in Phase 2 of the multi-role
+			// rollout — see internal/agent/role_router.go).
+			pickedRole := ClassifyRole(ClassifyInputs{
+				UserMessage:     call.Prompt,
+				History:         prepared.Messages,
+				ForcedRole:      a.forcedRole.Get(),
+				SkillRole:       config.RoleType(""), // TODO: wire skill preferred-role
+				ShouldSummarize: false,                // summarize path bypasses PrepareStep
+			})
+			a.currentRole.Set(pickedRole)
+			// One-shot semantics: clear the forced role after we consumed it.
+			a.forcedRole.Set(config.RoleType(""))
+
+			var roleAddendum string
+			if v, ok := a.rolePromptAddenda.Get(pickedRole); ok {
+				roleAddendum = v
+			}
+
+			composedPrefix := promptPrefix
+			if roleAddendum != "" {
+				if composedPrefix != "" {
+					composedPrefix += "\n\n" + roleAddendum
+				} else {
+					composedPrefix = roleAddendum
+				}
+			}
+			if composedPrefix != "" {
+				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(composedPrefix)}, prepared.Messages...)
 			}
 
 			sessionLock.Lock()
 			stepMessages = cloneFantasyMessages(prepared.Messages)
 			sessionLock.Unlock()
 
+			// Resolve the model attribution shown in the message log. When
+			// Roles is populated AND the picked role has its own Model
+			// configured, attribute the assistant turn to that model so
+			// the user (and request_traces) see who actually answered.
+			// Otherwise attribute to largeModel as before.
+			attribModel := largeModel.ModelCfg
+			if v, ok := a.roles.Get(pickedRole); ok && v.ModelCfg.Model != "" {
+				attribModel = v.ModelCfg
+			}
+
 			var assistantMsg message.Message
 			assistantMsg, err = a.messages.Create(callContext, call.SessionID, message.CreateMessageParams{
 				Role:     message.Assistant,
 				Parts:    []message.ContentPart{},
-				Model:    largeModel.ModelCfg.Model,
-				Provider: largeModel.ModelCfg.Provider,
+				Model:    attribModel.Model,
+				Provider: attribModel.Provider,
 			})
 			if err != nil {
 				return callContext, prepared, err
@@ -1287,6 +1371,22 @@ func (a *sessionAgent) SetSystemPrompt(systemPrompt string) {
 
 func (a *sessionAgent) Model() Model {
 	return a.largeModel.Get()
+}
+
+// SetForcedRole pins the next turn's role to the given value.
+// One-shot: after PrepareStep consumes it, currentRole is set and
+// forcedRole is reset to "". Pass "" explicitly to clear without
+// consuming.
+func (a *sessionAgent) SetForcedRole(role config.RoleType) {
+	a.forcedRole.Set(role)
+}
+
+// CurrentRole returns the role chosen for the most recent turn.
+// Empty until PrepareStep has fired at least once. UI subscribes via
+// polling — this is csync.Value, not pubsub, to avoid the extra
+// channel plumbing for what's effectively a per-frame UI read.
+func (a *sessionAgent) CurrentRole() config.RoleType {
+	return a.currentRole.Get()
 }
 
 // convertToToolResult converts a fantasy tool result to a message tool result.

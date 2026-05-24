@@ -61,6 +61,35 @@ const (
 	AgentTask  string = "task"
 )
 
+// RoleType labels a specialized model role for multi-agent orchestration.
+// Each role can have its own SelectedModel under config.Roles, and a
+// per-turn classifier picks which role handles the current step. When a
+// role is unset the agent falls back to the SelectedModelTypeLarge model.
+//
+// Inspired by Anthropic's production split (Opus → planner, Sonnet →
+// coder, Haiku → fetcher, separate model for review), plus
+// orchestrator-worker patterns from MasRouter (arXiv:2508.04903) and
+// Patronus AI Agent Routing best practices (2026).
+type RoleType string
+
+const (
+	RolePlanner    RoleType = "planner"    // architecture, decomposition; high reasoning, no edits
+	RoleCoder      RoleType = "coder"      // writes / edits / runs code; tool-heavy
+	RoleReviewer   RoleType = "reviewer"   // critical eye on diffs; finds bugs / risks
+	RoleFetcher    RoleType = "fetcher"    // gathers context (web/files); cheap + fast
+	RoleSummarizer RoleType = "summarizer" // history compaction; cheap + faithful
+)
+
+// AllRoles is the canonical ordering used by config validation, TUI
+// pickers, and `/role` autocomplete.
+var AllRoles = []RoleType{
+	RolePlanner,
+	RoleCoder,
+	RoleReviewer,
+	RoleFetcher,
+	RoleSummarizer,
+}
+
 type SelectedModel struct {
 	// The model id as used by the provider API.
 	// Required.
@@ -568,6 +597,24 @@ type Config struct {
 	// We currently only support large/small as values here.
 	Models map[SelectedModelType]SelectedModel `json:"models,omitempty" jsonschema:"description=Model configurations for different model types,example={\"large\":{\"model\":\"gpt-4o\",\"provider\":\"openai\"}}"`
 
+	// Roles is the multi-agent role → model map. Per-turn the agent
+	// classifier picks a role (planner / coder / reviewer / fetcher /
+	// summarizer); the chosen role's SelectedModel is used for that
+	// turn. Falls back to Models[Large] when a role is unset.
+	//
+	// Optional; an empty/nil Roles map means single-model mode (the
+	// pre-multi-agent behavior). When Roles is populated, the TUI
+	// surfaces the active role and a `/role <name>` command can pin
+	// it for the next turn.
+	Roles map[RoleType]SelectedModel `json:"roles,omitempty" jsonschema:"description=Multi-agent role-to-model map. Optional; falls back to models.large per-role when unset.,example={\"planner\":{\"model\":\"deepseek-v4-pro\",\"provider\":\"tokenharbor\"},\"coder\":{\"model\":\"glm-5.1\",\"provider\":\"tokenharbor\"}}"`
+
+	// RolePromptAddenda is an optional per-role system-prompt addendum
+	// that gets prepended (after systemPromptPrefix) when the role
+	// fires. Use to bias each model toward its specialty. Built-in
+	// defaults live in agent/role_prompts.go; this map only needs to
+	// be set when the user wants to override them.
+	RolePromptAddenda map[RoleType]string `json:"role_prompt_addenda,omitempty" jsonschema:"description=Per-role system-prompt addendum that overrides the default specialization hint"`
+
 	// Recently used models stored in the data directory config.
 	RecentModels map[SelectedModelType][]SelectedModel `json:"recent_models,omitempty" jsonschema:"-"`
 
@@ -648,6 +695,42 @@ func (c *Config) SmallModel() *catwalk.Model {
 		return nil
 	}
 	return c.GetModel(model.Provider, model.Model)
+}
+
+// RoleSelectedModel returns the SelectedModel for a given role. When the
+// role isn't configured (Roles map nil or missing entry), it falls back
+// to the user's chosen Large model so existing single-model workflows
+// keep working byte-identically.
+func (c *Config) RoleSelectedModel(role RoleType) SelectedModel {
+	if c.Roles != nil {
+		if m, ok := c.Roles[role]; ok && m.Model != "" && m.Provider != "" {
+			return m
+		}
+	}
+	return c.Models[SelectedModelTypeLarge]
+}
+
+// RoleModel returns the catwalk Model definition (pricing, context
+// window, capabilities) for the resolved role. Same fallback semantics
+// as RoleSelectedModel.
+func (c *Config) RoleModel(role RoleType) *catwalk.Model {
+	sm := c.RoleSelectedModel(role)
+	return c.GetModel(sm.Provider, sm.Model)
+}
+
+// HasRoles returns true when Roles is populated with at least one
+// non-empty entry. Used by the coordinator to decide whether to build
+// the multi-role agent stack or stick with the legacy large/small flow.
+func (c *Config) HasRoles() bool {
+	if c.Roles == nil {
+		return false
+	}
+	for _, sm := range c.Roles {
+		if sm.Model != "" && sm.Provider != "" {
+			return true
+		}
+	}
+	return false
 }
 
 const maxRecentModelsPerType = 5

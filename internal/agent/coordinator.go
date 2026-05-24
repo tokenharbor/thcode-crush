@@ -438,6 +438,11 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 	}
 
 	largeProviderCfg, _ := c.cfg.Config().Providers.Get(large.ModelCfg.Provider)
+	// Multi-role model resolution: builds a role → Model map from
+	// config.Roles. Empty map when Roles isn't configured — the agent
+	// then runs in legacy single-model mode and falls back to large.
+	roleModels := c.buildRoleModels(ctx, isSubAgent)
+	rolePromptAddenda := c.cfg.Config().RolePromptAddenda
 	result := NewSessionAgent(SessionAgentOptions{
 		LargeModel:           large,
 		SmallModel:           small,
@@ -450,6 +455,8 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		Messages:             c.messages,
 		Tools:                nil,
 		Notify:               c.notify,
+		Roles:                roleModels,
+		RolePromptAddenda:    rolePromptAddenda,
 	})
 
 	c.readyWg.Go(func() error {
@@ -668,6 +675,76 @@ func (c *coordinator) buildAgentModels(ctx context.Context, isSubAgent bool) (Mo
 			ModelCfg:   smallModelCfg,
 			FlatRate:   smallProviderCfg.FlatRate,
 		}, nil
+}
+
+// buildRoleModels resolves config.Roles into per-role Model structs.
+// Returns an empty map when Roles is unset — the agent then uses
+// largeModel for every turn (legacy behavior). Provider/model lookup
+// failures for individual roles are LOGGED, not fatal: a missing
+// reviewer model shouldn't block the agent from running. The
+// classifier+agent.go fallback (RoleSelectedModel → Large) covers it.
+//
+// Deduplicates provider builds by ID so we don't open 5 fresh
+// connections for the same provider config.
+func (c *coordinator) buildRoleModels(ctx context.Context, isSubAgent bool) map[config.RoleType]Model {
+	out := make(map[config.RoleType]Model)
+	cfg := c.cfg.Config()
+	if !cfg.HasRoles() {
+		return out
+	}
+	type provCache struct {
+		provider fantasy.Provider
+		err      error
+	}
+	providerCache := make(map[string]*provCache)
+	for role, sm := range cfg.Roles {
+		if sm.Model == "" || sm.Provider == "" {
+			continue
+		}
+		pcfg, ok := cfg.Providers.Get(sm.Provider)
+		if !ok {
+			slog.Warn("Role provider not configured", "role", role, "provider", sm.Provider)
+			continue
+		}
+		pc, ok := providerCache[sm.Provider]
+		if !ok {
+			prov, err := c.buildProvider(pcfg, sm, isSubAgent)
+			pc = &provCache{provider: prov, err: err}
+			providerCache[sm.Provider] = pc
+		}
+		if pc.err != nil {
+			slog.Warn("Role provider build failed", "role", role, "provider", sm.Provider, "error", pc.err)
+			continue
+		}
+		var cw *catwalk.Model
+		for _, m := range pcfg.Models {
+			if m.ID == sm.Model {
+				m := m
+				cw = &m
+				break
+			}
+		}
+		if cw == nil {
+			slog.Warn("Role model not found in provider", "role", role, "provider", sm.Provider, "model", sm.Model)
+			continue
+		}
+		modelID := sm.Model
+		if sm.Provider == openrouter.Name && isExactoSupported(modelID) {
+			modelID += ":exacto"
+		}
+		lm, err := pc.provider.LanguageModel(ctx, modelID)
+		if err != nil {
+			slog.Warn("Role LanguageModel build failed", "role", role, "model", modelID, "error", err)
+			continue
+		}
+		out[role] = Model{
+			Model:      lm,
+			CatwalkCfg: *cw,
+			ModelCfg:   sm,
+			FlatRate:   pcfg.FlatRate,
+		}
+	}
+	return out
 }
 
 func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map[string]string, providerID string) (fantasy.Provider, error) {
